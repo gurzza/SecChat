@@ -4,6 +4,7 @@ import threading
 import hashlib
 from Crypto.Random import get_random_bytes
 import ecdsa
+from Crypto.PublicKey import RSA
 
 # Create Socket (TCP) Connection
 ServerSocket = socket.socket(family=socket.AF_INET, type=socket.SOCK_STREAM)
@@ -14,9 +15,10 @@ ThreadCount = 0
 MAX_CONNECTIONS = 5
 
 UserName = []
-PK_DGST_KEYS = []
-SERVER_PK_DGST = ''
-SERVER_SK_DGST = ''
+RSAKeys = []
+ServerRSAKeys = []
+ClientRSAKeys = []
+HostandPort = []
 
 try:
     ServerSocket.bind((HOST_IP, PORT))
@@ -31,15 +33,30 @@ def create_user_profile(connection):
     flagName = False
     name = ''
 
-    pk_key_client = connection.recv(1024).decode()
-    # print('pk_key_client:\n', pk_key_client)
+    serverKeys = RSA.generate(2048)
+
+    # n exchange
+    clientKeyN = int.from_bytes(connection.recv(128), "big")
+    connection.send(int(serverKeys.n).to_bytes(256, "big"))
+    # e exchange
+    clientKeyE = int.from_bytes(connection.recv(18), "big")
+    connection.send(int(serverKeys.e).to_bytes(18, "big"))
+
+    print('n\n', clientKeyN)
+    print('e\n', clientKeyE)
+    print('s_n\n', serverKeys.n)
+    print('s_e\n', serverKeys.e)
+
     while not flagName:
         connection.send('(FROM SERVER) Enter your name/nickname: '.encode())
         name = connection.recv(1024).decode()
         if name not in UserName:
             flagName = True
             UserName.append(name)
-            PK_DGST_KEYS.append(pk_key_client)
+            ServerRSAKeys.append(serverKeys)
+            ClientRSAKeys.append((clientKeyN, clientKeyE))
+            HostandPort.append(connection.getpeername())
+            print('Host&Port:\n', connection.getpeername())
         connection.send(str(flagName).encode())
 
     return name
@@ -47,30 +64,42 @@ def create_user_profile(connection):
 
 def choose_recipient(connection):
     flagRecipient = False
-    recipient_name = ''
 
+    A = connection.recv(1024).decode()  # Alice
+    # connection.send('ACK'.encode())
     while not flagRecipient:
-        connection.send('(FROM SERVER) Enter the name you want to communicate with: ')
-        recipient_name = connection.recv(1024).decode()
-        flagRecipient = recipient_name in UserName
+        connection.send('(FROM SERVER) Enter the name you want to communicate with: '.encode())
+        B = connection.recv(1024).decode()  # Bob
+        flagRecipient = B in UserName
         connection.send(str(flagRecipient).encode())
 
-    return recipient_name
+    # step 1: A, B
+    connection.recv(1024).decode()
+
+    # step 2
+    userAIndex = UserName.index(A)
+    userBIndex = UserName.index(B)
+    # B[0] + n + e
+    serverAKey = ServerRSAKeys[userAIndex]
+    message = (str(ord(B[0]) % 2) +
+               str(pow(ClientRSAKeys[userBIndex][0], serverAKey.d, serverAKey.n)) +
+               str('/') + str(pow(ClientRSAKeys[userBIndex][1], serverAKey.d, serverAKey.n)))
+    connection.send(message.encode())
+
+    # step 3
+    message = str(HostandPort[userBIndex][0])
+    connection.send(message.encode())
+
+    return B
 
 
 ##########################################################
-def key_exchange(connection, first_client_name, second_client_name):
-    # sk
-    s = ecdsa.SigningKey.generate(curve=ecdsa.SECP256k1, hashfunc=hashlib.sha256)
-    # pk
-    v = s.get_verifying_key()
 
-    # msg = '1234'.encode()
-    # dgst = s.sign(msg)
-    # try:
-    #     v.verify(dgst, '123'.encode())
-    # except:
-    #     print('ERROR!')
+
+def get_key_by_name(alice_name):
+    userAIndex = UserName.index(alice_name)
+    alice_e, alice_n = ClientRSAKeys[userAIndex]
+    return alice_e, alice_n
 
 
 def threaded_client(connection):
@@ -80,15 +109,25 @@ def threaded_client(connection):
     while operation != 'q':
         if operation == 'l':
             connection.send(str(UserName).encode())
-        else:  # == 'c'
+        elif operation == 'c':
             second_client_name = choose_recipient(connection)
-            key_exchange(connection, first_client_name, second_client_name)
-
+        elif operation == 'w':
+            connection.send('(FROM SERVER) Please, wait...\n'.encode())
+            mes = connection.recv(2048).decode()
+            print('mes:', mes)
+            bob_name, alice_name = mes.split('/')
+            alice_e, alice_n = get_key_by_name(alice_name)
+            userBIndex = UserName.index(bob_name)
+            serverBRSAKey = ServerRSAKeys[userBIndex]
+            message = (str(ord(alice_name[0]) % 2) +
+                       str(pow(alice_e, serverBRSAKey.d, serverBRSAKey.n)) +
+                       str('/') + str(pow(alice_n, serverBRSAKey.d, serverBRSAKey.n)))
+            connection.send(message.encode())
+            print('alice_e: ', alice_e)
+            print('alice_n: ', alice_n)
 
 ###########################################################
 
-SERVER_SK_DGST = ecdsa.SigningKey.generate(curve=ecdsa.SECP256k1, hashfunc=hashlib.sha256)
-SERVER_PK_DGST = SERVER_SK_DGST.get_verifying_key()
 
 while True:
     Client, address = ServerSocket.accept()
