@@ -1,40 +1,40 @@
+import base64
 import hashlib
 import socket
 import socket
 import sys
 from Crypto.PublicKey import RSA
 from Crypto.Random import get_random_bytes
+from Crypto.Cipher import PKCS1_OAEP
 
-SERVER_RSA_N = 0
-SERVER_RSA_E = 0
+SERVER_RSA = None
 # CLIENT_RSA_KEYS = []
-PORT_FOR_BOB = 10_000
+PORT_FOR_BOB = 15_000
 
 
 def create_my_name(sc):
     flagName = False
     name = ''
-    global SERVER_RSA_E
-    global SERVER_RSA_N
+    global SERVER_RSA
     userKeys = RSA.generate(1024)
 
-    # n exchange
-    sc.send(int(userKeys.n).to_bytes(128, "big"))
-    SERVER_RSA_N = int.from_bytes(sc.recv(256), "big")
-    # e exchange
-    sc.send(int(userKeys.e).to_bytes(18, "big"))
-    SERVER_RSA_E = int.from_bytes(sc.recv(18), "big")
-
-    print('n\n', SERVER_RSA_N)
-    print('e\n', SERVER_RSA_E)
-    print('c_n\n', userKeys.n)
-    print('c_e\n', userKeys.e)
+    # userKeysPublicDER = userKeys.publickey().exportKey('DER')
+    userKeysDER = userKeys.exportKey('DER')
+    # sc.send(userKeysPublicDER)
+    sc.send(userKeysDER)
+    key = sc.recv(2048)
+    serverPublicKey = RSA.importKey(key)
+    userRSA = PKCS1_OAEP.new(userKeys)
+    SERVER_RSA = PKCS1_OAEP.new(serverPublicKey)
+    # sc.send('aCK'.encode())
+    # message = sc.recv(2048)
+    # print(SERVER_RSA.decrypt(message))
 
     while not flagName:
         name = input(sc.recv(1024).decode())
         sc.send(name.encode())
         flagName = (sc.recv(1024).decode() == 'True')
-    return name, userKeys
+    return name, userRSA
 
 
 def print_operations():
@@ -51,6 +51,10 @@ def print_user_list(client):
     print('Connected users:\n', UserName)
 
 
+def string_padding(string):
+    return string + (20 - len(string)) * '0'
+
+
 def initiate_connection(client, UserName):
     flagRecipient = False
     recipient_name = ''
@@ -64,17 +68,35 @@ def initiate_connection(client, UserName):
 
     print('here')
     # step 1: A, B -->
+    print(UserName + '/' + recipient_name)
     client.send((UserName + '/' + recipient_name).encode())
 
     # step 2: {K_b, B}  \\K_t(-1) <--
-    message = client.recv(8192).decode()
-    print('SERVER_RSA_N:', SERVER_RSA_N)
-    if ord(recipient_name[0]) % 2 != ord(message[0]) % 2:
+    # serverRSA = PKCS1_OAEP.new(SERVER_RSA)
+
+    # print(type(SERVER_RSA))
+    message = b''
+    for _ in range(10):
+        message_enc = client.recv(2048)
+        #en(message_enc))
+        message += SERVER_RSA.decrypt(message_enc)
+        #print(message)
+        client.send('ACK'.encode())
+        # if b'stop' == message:
+        #     break
+    bob_name = message[:20].decode()
+    bob_key = RSA.importKey(message[20:])
+
+    # print('bob_name: ', bob_name)
+    # print('bob_key: ', bob_key)
+
+    recipient_name_name_padding = string_padding(recipient_name)
+    if recipient_name_name_padding != bob_name:
         print('ERROR!!! Message substitution has been occurred...')
         sys.exit()
-    n_end = message.find('/')
-    bob_n = pow(int(message[1: n_end]), SERVER_RSA_E, SERVER_RSA_N)
-    bob_e = pow(int(message[n_end + 1:]), SERVER_RSA_E, SERVER_RSA_N)
+    # n_end = message.find('/')
+    # bob_n = pow(int(message[1: n_end]), SERVER_RSA_E, SERVER_RSA_N)
+    # bob_e = pow(int(message[n_end + 1:]), SERVER_RSA_E, SERVER_RSA_N)
 
     # step 3
     bob_host = client.recv(1024).decode()
@@ -83,88 +105,120 @@ def initiate_connection(client, UserName):
     connection_to_Bob = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     connection_to_Bob.connect((bob_host, PORT_FOR_BOB))
     # T + {Ra, A}
-    connection_to_Bob.send(UserName.encode())  # send my name
-    connection_to_Bob.recv(1024)  # ACK
-    message = str(int(client.getpeername()[0][0]) % 2)
-    R_a = int.from_bytes(get_random_bytes(8), "big")
-    print('ALICE R_a:', R_a)
-    message_to_enc = str(ord(UserName[0]) % 2) + str(R_a)
-    enc_message = pow(int(message_to_enc), bob_e, bob_n)
-    message_to_send = message + str(enc_message)
-    connection_to_Bob.send(message_to_send.encode())
+    # connection_to_Bob.send(UserName.encode())  # send my name
+    # connection_to_Bob.recv(1024)  # ACK
+    # message = str(int(client.getpeername()[0][0]) % 2)
+    # R_a = int.from_bytes(get_random_bytes(8), "big")
+    # print('ALICE R_a:', R_a)
+    # message_to_enc = str(ord(UserName[0]) % 2) + str(R_a)
+    # enc_message = pow(int(message_to_enc), bob_e, bob_n)
+    # message_to_send = message + str(enc_message)
+
+
+    bobRSA = PKCS1_OAEP.new(bob_key)
+    R_a = get_random_bytes(8)
+    print('ALICE R_a\n', R_a)
+    T = bytes(str(client.getpeername()[1]), 'ascii')  # get server port
+    userName_padding = string_padding(UserName)
+    second_part = R_a + bytes(userName_padding, 'ascii')
+    enc_part = bobRSA.encrypt(second_part)
+    connection_to_Bob.send(T)
+    if connection_to_Bob.recv(12).decode() != 'ACK':
+        sys.exit()
+    connection_to_Bob.send(enc_part)
 
     # step 6
-    enc_message = connection_to_Bob.recv(2048).decode()
-    message = pow(int(enc_message), CLIENT_RSA_KEYS.d, CLIENT_RSA_KEYS.n)
-    R_a_Bob = str(message)[:len(str(R_a))]
-    if int(R_a_Bob) != R_a:
+    enc_message = connection_to_Bob.recv(2048)
+    message = userRSA.decrypt(enc_message)
+    R_a_Bob = message[:8]
+    if R_a_Bob != R_a:
         print('ERROR!!! Message spoofing!')
         sys.exit()
-    R_b = int(str(message)[len(str(R_a)):])
+    R_b = message[8:]
     print('ALICE R_b:', R_b)
 
     # step 7
-    enc_message = pow(R_b, bob_e, bob_n)
-    connection_to_Bob.send(str(enc_message).encode())
+    enc_message = bobRSA.encrypt(R_b)
+    connection_to_Bob.send(enc_message)
 
+    #################### create symmetric key
+    R_a_sym = get_random_bytes(8)
+    message = UserName + '/' + recipient_name + '/' + str(R_a_sym)
+    client.send(message.encode())
+    print('SENDED MESSAGE:', message)
     return recipient_name
+
 
 ####################################
 
 
-def connect_to_user(server_connect, MY_RSA_KEYS, myUserName):
+def connect_to_user(server_connect, userRSA, myUserName):  # bob side
     clientSocket = socket.socket(family=socket.AF_INET, type=socket.SOCK_STREAM)
     HOSTNAME = socket.gethostname()
     HOST_IP = socket.gethostbyname(HOSTNAME)
-    PORT = 10_000
+    # PORT = 10_000
     try:
-        clientSocket.bind((HOST_IP, PORT))
+        clientSocket.bind((HOST_IP, PORT_FOR_BOB))
     except socket.error as e:
         print(str(e))
     clientSocket.listen(1)
     Client_to_Alice, address = clientSocket.accept()
     ####
     # step 3
-    alice_name = Client_to_Alice.recv(1024).decode()
+    serverPort_checker = Client_to_Alice.recv(1024).decode()
     Client_to_Alice.send('ACK'.encode())
-    message = Client_to_Alice.recv(1024).decode()
-    first_letter_Alice = str(message)[0]
-    dec_message = pow(int(str(message)[1:]), MY_RSA_KEYS.d, MY_RSA_KEYS.n)
-    R_a = str(dec_message)[1:]
-    #print('Bob R_a:', R_a)
+    message_enc = Client_to_Alice.recv(1024)
+    message = userRSA.decrypt(message_enc)
+    R_a = message[:8]
+    alice_name = message[8:].decode()
+    # print('BOB SIDE:\n')
+    # print('R_a:\n', R_a)
+    # print('ALICE_NAME:\n', alice_name)
+
+
+    # print('Bob R_a:', R_a)
 
     # step 4
     # alice_ip, alice_port = Client_to_Alice.getpeername()
     # print('port_type:', type(alice_port))
     message = myUserName + '/' + alice_name
-    print('sended mes:', message)
+    #print('sended mes:', message)
     server_connect.send(message.encode())
 
     # step 5
-    ser_message = server_connect.recv(2048).decode()
-    if ser_message[0] != first_letter_Alice:
+    message = b''
+    for _ in range(10):
+        message_enc = client.recv(2048)
+        #print(len(message_enc))
+        message += SERVER_RSA.decrypt(message_enc)
+        # print(message)
+        client.send('ACK'.encode())
+
+    alice_name_check = message[:20].decode()
+    alice_key = RSA.importKey(message[20:])
+    #print(alice_name_check)
+    #print(alice_name)
+    if alice_name_check != alice_name:
         print('ERROR!!! INCORRECT MESSAGE FROM SERVER')
-    enc_alice_n, enc_alice_e = ser_message[1:].split('/')
-    alice_e = pow(int(enc_alice_e), SERVER_RSA_E, SERVER_RSA_N)
-    alice_n = pow(int(enc_alice_n), SERVER_RSA_E, SERVER_RSA_N)
+    #print('BOB SIDE alice_key:\n', alice_key)
 
     # print('alice_e: ', alice_e)
     # print('alice_n: ', alice_n)
-
+    aliceRSA = PKCS1_OAEP.new(alice_key)
     # step 6
-    R_b = int.from_bytes(get_random_bytes(8), "big")
+    R_b = get_random_bytes(8)
     print('Bob R_b', R_b)
-    message = str(R_a) + str(R_b)
-    enc_message = pow(int(message), alice_e, alice_n)
-    Client_to_Alice.send(str(enc_message).encode())
+    message = R_a + R_b
+    #enc_message = pow(int(message), alice_e, alice_n)
+    message_enc = aliceRSA.encrypt(message)
+    Client_to_Alice.send(message_enc)
 
     # step 7
-    enc_message = Client_to_Alice.recv(2048).decode()
-    R_b_Alice = pow(int(enc_message), MY_RSA_KEYS.d, MY_RSA_KEYS.n)
+    enc_message = Client_to_Alice.recv(2048)
+    R_b_Alice = userRSA.decrypt(enc_message)
     if R_b_Alice != R_b:
         print('ERROR!!! Message spoofing in Alice side!')
-
-
+    print('OK!')
 
 ###############################
 
@@ -172,7 +226,7 @@ if __name__ == '__main__':
     # create connection
     SERVER_NAME = 'DESKTOP-7FRD9J8'
     SERVER_IP = socket.gethostbyname(SERVER_NAME)
-    PORT = 8082
+    PORT = 18082
 
     client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     # remove or keep try-except?
@@ -184,7 +238,7 @@ if __name__ == '__main__':
 
     # log in
 
-    client_name, CLIENT_RSA_KEYS = create_my_name(client)
+    client_name, userRSA = create_my_name(client)
     print('Welcome, ', client_name, '\n')
     #########
 
@@ -204,7 +258,7 @@ if __name__ == '__main__':
         elif operation.lower() == 'wait connection' or operation.lower() == 'w':
             client.send(operation.lower()[0].encode())
             print(client.recv(1024).decode())
-            connect_to_user(client, CLIENT_RSA_KEYS, client_name)
+            connect_to_user(client, userRSA, client_name)
 
         ###
         elif operation.lower() == 'quit' or operation.lower() == 'q':
