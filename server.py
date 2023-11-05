@@ -97,6 +97,9 @@ def choose_recipient(connection):
     userBIndex = UserName.index(B)
     # B + key
     serverAliceRSA = ServerRSA[userAIndex]
+    serverBobRSA = ServerRSA[userBIndex]
+    clientAliceRSA = ClientRSA[userAIndex]
+    clientBobRSA = ClientRSA[userBIndex]
     good_name = bytes(string_padding(B), 'ascii')
     with open(B + 'key.txt', 'rb') as f:
         bob_key = f.read()
@@ -105,7 +108,6 @@ def choose_recipient(connection):
     #print('messaaa\n', message)
     for i in range((len(message) // 64) + 1):
         c = serverAliceRSA.encrypt(message[i * 64: (i + 1) * 64])
-        print(len(c))
         connection.send(c)
         if connection.recv(12).decode() != 'ACK':
             sys.exit()
@@ -119,21 +121,43 @@ def choose_recipient(connection):
 
 
     ########symmetric key
-    message = connection.recv(1024).decode()
-    alice_name, bob_name, R_a_sym = message.split('/')
+    message = connection.recv(1024)
+    alice_name = string_without_padding(message[:20].decode())
+    bob_name = string_without_padding(message[20:40].decode())
+    R_a_sym = message[40:]
     if alice_name != A or bob_name != B:
         print('INCORRECT MESSSAGE FROM ALICE!!!')
         sys.exit()
 
     # step 2
 
-    K = get_random_bytes(256)
-    first_part = K + bytes(alice_name, 'ascii')
-    cipher = PKCS1_OAEP.new(key)
-    # name length 20 bytes
-    edited_name = bob_name + (20 - len(bob_name)) * 'a'
-    message = bytes(R_a_sym, 'ascii') + bytes(edited_name, 'ascii') + K
+    K = get_random_bytes(128)
+    second_part = K + bytes(string_padding(alice_name), 'ascii')
+    print('K ', K)
+    print('R_a_sym ', R_a_sym)
+    enc_part = b''
+    for i in range((len(second_part) // 64) + 1):
+        enc_part += clientBobRSA.encrypt(second_part[i * 64: (i + 1) * 64])
+        #connection.send(enc_part)
+        #print(enc_part, '\n')
+        #print(len(enc_part))
+        #connection.send(c)
 
+    #connection.send(enc_part)
+    print('second part\n', second_part)
+    print('ENC_PART\n', enc_part)
+    message = R_a_sym + bytes(string_padding(bob_name), 'ascii') + K + enc_part
+    #print('mes len', len(message))
+    #print('mes', message)
+
+    for i in range((len(message) // 64) + 1):
+        c = clientAliceRSA.encrypt(message[i * 64: (i + 1) * 64])
+        #print('EN ', c)
+        #print(len(c))
+        connection.send(c)
+        if connection.recv(12).decode() != 'ACK':
+            sys.exit()
+    print('END')
     return B
 
 
@@ -183,6 +207,7 @@ def threaded_client(connection):
             # print("155555")
             # print('alice_e: ', alice_e)
             # print('alice_n: ', alice_n)
+            connection.close()
 
 
 ###########################################################
