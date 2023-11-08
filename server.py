@@ -38,20 +38,13 @@ def create_user_profile(connection):
 
     serverKeys = RSA.generate(2048)
 
-    # serverKeysPublicDER = serverKeys.publickey().exportKey('DER')
     serverKeysDER = serverKeys.exportKey('DER')
-    # clientPublicKey = RSA.importKey(connection.recv(2048))
     clientKeyDER = connection.recv(2048)
     clientKey = RSA.importKey(clientKeyDER)
-    # connection.send(serverKeysPublicDER)
     connection.send(serverKeysDER)
-    # print('RECEIVED2:\n', clientPublicKey)
 
     serverRSA = PKCS1_OAEP.new(serverKeys)
-    # clientRSADecryption = PKCS1_OAEP.new(clientPublicKey)
     clientRSA = PKCS1_OAEP.new(clientKey)
-    # connection.recv(1024)
-    # connection.send(serverRSA.encrypt(b'121'))
 
     while not flagName:
         connection.send('(FROM SERVER) Enter your name/nickname: '.encode())
@@ -74,7 +67,6 @@ def string_padding(string):
     return string + (20-len(string))*'0'
 
 def string_without_padding(string):
-    #string = string.decode()
     pos = string.find('0')
     return string[:pos]
 
@@ -82,7 +74,6 @@ def choose_recipient(connection):
     flagRecipient = False
 
     A = connection.recv(1024).decode()  # Alice
-    # connection.send('ACK'.encode())
     while not flagRecipient:
         connection.send('(FROM SERVER) Enter the name you want to communicate with: '.encode())
         B = connection.recv(1024).decode()  # Bob
@@ -90,7 +81,10 @@ def choose_recipient(connection):
         connection.send(str(flagRecipient).encode())
 
     # step 1: A, B
-    print('(FROM ' + A + '):' + connection.recv(1024).decode())
+    A_check, B_check = connection.recv(1024).decode().split('/')
+    if A_check != A or B_check != B:
+        print('Something wrong...')
+        sys.exit()
 
     # step 2
     userAIndex = UserName.index(A)
@@ -104,16 +98,11 @@ def choose_recipient(connection):
     with open(B + 'key.txt', 'rb') as f:
         bob_key = f.read()
     message = good_name + bob_key
-    #aliceRSA = PKCS1_OAEP.new(serverRSA)
-    #print('messaaa\n', message)
     for i in range((len(message) // 64) + 1):
         c = serverAliceRSA.encrypt(message[i * 64: (i + 1) * 64])
         connection.send(c)
         if connection.recv(12).decode() != 'ACK':
             sys.exit()
-    #connection.send(serverAliceRSA.encrypt(b'stop'))
-
-    #connection.send(serverAliceRSA.encrypt(message64))
 
     # step 3
     message = str(HostandPort[userBIndex][0])
@@ -131,43 +120,28 @@ def choose_recipient(connection):
 
     # step 2
 
-    K = get_random_bytes(128)
+    K = get_random_bytes(16)
     second_part = K + bytes(string_padding(alice_name), 'ascii')
-    print('K ', K)
-    print('R_a_sym ', R_a_sym)
+    #print('K ', K)
+    #print('R_a_sym ', R_a_sym)
     enc_part = b''
     for i in range((len(second_part) // 64) + 1):
         enc_part += clientBobRSA.encrypt(second_part[i * 64: (i + 1) * 64])
-        #connection.send(enc_part)
-        #print(enc_part, '\n')
-        #print(len(enc_part))
-        #connection.send(c)
 
-    #connection.send(enc_part)
-    print('second part\n', second_part)
-    print('ENC_PART\n', enc_part)
     message = R_a_sym + bytes(string_padding(bob_name), 'ascii') + K + enc_part
-    #print('mes len', len(message))
-    #print('mes', message)
+
 
     for i in range((len(message) // 64) + 1):
         c = clientAliceRSA.encrypt(message[i * 64: (i + 1) * 64])
-        #print('EN ', c)
-        #print(len(c))
+
         connection.send(c)
         if connection.recv(12).decode() != 'ACK':
             sys.exit()
-    print('END')
     return B
 
 
 ##########################################################
 
-
-# def get_key_by_name(alice_name):
-#     userAIndex = UserName.index(alice_name)
-#     alice_e, alice_n = ClientRSAKeys[userAIndex]
-#     return alice_e, alice_n
 
 
 def threaded_client(connection):
@@ -176,16 +150,14 @@ def threaded_client(connection):
     operation = connection.recv(512).decode()
     while operation != 'q':
         if operation == 'l':
-            connection.send(str(UserName).encode())
+            connection.send((" ".join(UserName)).encode())
         elif operation == 'c':
             second_client_name = choose_recipient(connection)
         elif operation == 'w':
             connection.send('(FROM SERVER) Please, wait...\n'.encode())
-            mes = connection.recv(2048).decode()
-            print('mes:', mes)
+            mes = connection.recv(1024).decode()
             bob_name, alice_name_padding = mes.split('/')
             alice_name = string_without_padding(alice_name_padding)
-            #alice_e, alice_n = get_key_by_name(alice_name)
 
             #step 5
             userBIndex = UserName.index(bob_name)
@@ -194,20 +166,13 @@ def threaded_client(connection):
                 alice_key = f.read()
 
             message = bytes(alice_name_padding, 'ascii') + alice_key
-            #message_enc = serverBRSA(message)
-            #print('SERVER SIDE alice_key:\n', alice_key)
 
             for i in range((len(message) // 64) + 1):
                 c = serverBRSA.encrypt(message[i * 64: (i + 1) * 64])
-                #print(len(c))
                 connection.send(c)
                 if connection.recv(12).decode() != 'ACK':
                     sys.exit()
-            #connection.send(message_enc)
-            # print("155555")
-            # print('alice_e: ', alice_e)
-            # print('alice_n: ', alice_n)
-            connection.close()
+
 
 
 ###########################################################
